@@ -25,7 +25,7 @@
 #include "ultrasonic.h"
 #include "adas.h"
 #include "fault.h"
-
+#include "uart_shell.h"
 
 EV_HandleTypeDef ev;
 ADAS_HandleTypeDef adas;
@@ -33,9 +33,14 @@ Fault_HandleTypeDef flt;
 
 
 
-char msg[100];
+//char msg[100];
+//isr flag
 volatile uint8_t flag_ev=0 , sensor_flag = 0;
-uint8_t ev_div=0;
+//uart rx byte
+static uint8_t rx_byte;
+//counters
+static uint8_t ev_div=0;
+//static uint32_t loop_count = 0;
 
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -71,6 +76,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
+static void Print_Status(void);
 
 
 int main(void)
@@ -98,12 +104,15 @@ int main(void)
 	  HAL_TIM_Base_Start_IT(&htim1);       /* TIM1: 10ms IRQ      */
 	  HAL_TIM_Base_Start_IT(&htim3);       /* TIM2: 100ms IRQ used for counting     */
 	  HAL_TIM_Base_Start_IT(&htim2);
+	  //strt inttrup on receving the data
+	  HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
 
 
 	  EV_Init(&ev);//intlize ev
 	  HCSR04_Init();//initlize yultrasonic sensor to measure 3 distance
 	  ADAS_Init(& adas);//inlize left right front->400
 	  Fault_Init(& flt);//initlizating fault;
+	  Shell_Init(&huart1,&ev, &adas, &flt);
 
 
 
@@ -123,36 +132,15 @@ int main(void)
 
 	          EV_ReadADC(&ev);
 	          EV_Update(&ev, 0.01f);   /* dt = 10ms */
-	          //validating fault flag->soc, motor temo, colliosn and updating
-	          Fault_Check(&flt, &ev, &adas);
+
+
 
 	          /* Print every 1000ms (every 10 EV ticks) */
-	          if (++ev_div >= 10) {
+	          if (++ev_div >= 10)
+	          {
 	              ev_div = 0;
+	              Print_Status();
 
-	              /* Split floats into integer + decimal parts */
-	                  int spd  = (int)ev.speed_kmh;
-	                  int spdd = (int)(ev.speed_kmh  * 10.0f) % 10;
-	                  int soc  = (int)ev.soc;
-	                  int socd = (int)(ev.soc        * 10.0f) % 10;
-	                  int tmp  = (int)ev.motor_temp;
-	                  int tmpd = (int)(ev.motor_temp * 10.0f) % 10;
-	                  int trq  = (int)ev.motor_torque;
-	                  int acc  = (int)ev.accel_pedal;
-	                  int brk  = (int)ev.brake_pedal;
-	                  int rng  = (int)ev.range_km;
-
-
-	                  /* Line 1: EV data trq = torque */
-	                  sprintf(msg,
-	                      "SPD:%d.%d SOC:%d.%d TRQ:%d TMP:%d.%d RNG:%d ACC:%d BRK:%d\r\n",
-	                      spd, spdd,
-	                      soc, socd,
-	                      trq,
-	                      tmp, tmpd,
-	                      rng,
-	                      acc, brk);
-	                  HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
 
 	          }
 	      }
@@ -162,22 +150,13 @@ int main(void)
 	    	  HCSR04_ReadAll();
 	    	  //update ttc, alarms, bsd
 	    	  ADAS_Update(&adas, &ev);
-	    	  //convert into integer
-	    	  int ttcs = (int)adas.ttc_sec;
-	    	  int ttcd = (int)(adas.ttc_sec * 10.0f) % 10;
-	    	  int frnt = (int)adas.front_cm;
-	    	  int left = (int)adas.left_cm;
-	    	  int right = (int)adas.right_cm;
+	    	  //validating motor temp, soc, collosion update fault flag
+	    	  Fault_Check(&flt, &ev, &adas);
 
+	    	  //waiting to recive the data and process the cmnd
+	    	  Shell_Process();
 
-
-
-
-	    	  char msg[100];
-	    	  sprintf(msg, "F:%d L:%d R:%d TTC : %d.%ds COL : %d BSD : %d %d ALM : %d FLT:%02X \r\n", frnt, left, right, ttcs, ttcd, adas.collision_warn,adas.blindspot_left,adas.blindspot_right, (int)adas.alarm_priority, flt.flags);
-
-	    	   HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
-	      }
+	    	 }
 
 
 
@@ -186,6 +165,57 @@ int main(void)
 
 
 	  /* USER CODE END 3 */
+}//pushing to shell ring buffer->uart rx byte
+void HAL_UART_RxCpltaCallback(UART_HandleTypeDef *huart) {
+	if(huart->Instance == USART1) {
+		Shell_PushByte(rx_byte);
+		HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+	}
+}
+
+static void Print_Status(void)
+{
+    char msg[180];
+
+    /* Split floats into integer + decimal parts */
+    int spd  = (int)ev.speed_kmh;
+    int spdd = (int)(ev.speed_kmh * 10.0f) % 10;
+    int soc  = (int)ev.soc;
+    int socd = (int)(ev.soc * 10.0f) % 10;
+    int tmp  = (int)ev.motor_temp;
+    int tmpd = (int)(ev.motor_temp * 10.0f) % 10;
+    int trq  = (int)ev.motor_torque;
+    int acc  = (int)ev.accel_pedal;
+    int brk  = (int)ev.brake_pedal;
+    int rng  = (int)ev.range_km;
+
+    int ttcs = (int)adas.ttc_sec;
+    int ttcd = (int)(adas.ttc_sec * 10.0f) % 10;
+    int frnt = (int)adas.front_cm;
+    int left = (int)adas.left_cm;
+    int rght = (int)adas.right_cm;
+
+    /* Line 1: EV data */
+    sprintf(msg,
+            "SPD:%d.%d SOC:%d.%d TRQ:%d TMP:%d.%d RNG:%d ACC:%d BRK:%d\r\n",
+            spd, spdd,
+            soc, socd,
+            trq,
+            tmp, tmpd,
+            rng,
+            acc, brk);
+    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+
+    /* Line 2: ADAS + fault */
+    sprintf(msg,
+            "F:%d L:%d R:%d TTC:%d.%ds COL:%d BSD:%d%d ALM:%d FLT:%02X\r\n",
+            frnt, left, rght,
+            ttcs, ttcd,
+            adas.collision_warn,
+            adas.blindspot_left, adas.blindspot_right,
+            (int)adas.alarm_priority,
+            flt.flags);
+    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
 }
 
 

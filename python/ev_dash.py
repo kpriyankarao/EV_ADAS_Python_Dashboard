@@ -1,7 +1,7 @@
 """
 EV ADAS Python Dashboard — Phase 9
 Reads UART telemetry from STM32 Blue Pill / PICSimLab
-Run: python dashboard.py --port COM3
+Run: python dashboard.py --port COM1
      python dashboard.py --demo        (no hardware needed)
 """
 

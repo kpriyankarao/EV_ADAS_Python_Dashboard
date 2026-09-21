@@ -187,5 +187,5 @@ ev_dash/
 
 ## 👤 Author
 
-**[Tiya kumari]**
+**[K. Priyanka Rao]**
 Emertxe Automotive Embedded Internship — 2026
